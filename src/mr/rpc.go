@@ -7,19 +7,66 @@ package mr
 //
 
 import "os"
+import "sync"
 import "strconv"
 
+const (
+	TaskMap = 0
+	TaskReduce = 1
+	TaskWait = 2
+	TaskAllDone = 3
+)
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
+type TaskArgs struct {
+
 }
 
-type ExampleReply struct {
-	Y int
+// worker和coordinator之间交换的任务信息
+type TaskInfo struct {
+	State int
+	FileName string
+	FileIndex int
+	PartIndex int
+}
+
+// 任务信息的数组
+type TaskInfoArray struct {
+	taskArray []TaskInfo
+	mutex sync.Mutex
+}
+func (this *TaskInfoArray) lock() {
+	this.mutex.Lock()
+}
+func (this *TaskInfoArray) unlock() {
+	this.mutex.Unlock()
+}
+func (this *TaskInfoArray) Size() int {
+	return len(this.taskArray)
+}
+func (this *TaskInfoArray) Pop() TaskInfo {
+	this.lock()
+	arrayLen := len(this.taskArray)
+	if arrayLen == 0 {
+		this.unlock()
+		return nil
+	}
+	ret := this.taskArray[arrayLen - 1]
+	this.taskArray = this.taskArray[:arrayLen-1]
+	this.unlock()
+	return ret
+}
+func (this *TaskInfoArray) Push(taskInfo TaskInfo) {
+	this.lock()
+	if taskInfo == nil {
+		this.unlock()
+		return
+	}
+	this.taskArray = append(this.taskArray, taskInfo)
+	this.unlock()
 }
 
 // Add your RPC definitions here.

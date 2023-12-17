@@ -2,6 +2,7 @@ package mr
 
 import "fmt"
 import "log"
+import "time"
 import "net/rpc"
 import "hash/fnv"
 
@@ -32,33 +33,40 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+	for {
+		taskInfo := CallScheduleTask()
+		switch taskInfo.State {
+		case TaskMap:
+			// 执行map操作
+			fmt.Println("map operation start")
+			break
+		case TaskReduce:
+			// 执行reduce操作
+			fmt.Println("reduce operation start")
+			break
+		case TaskWait:
+			time.Sleep(time.Duration(time.Second * 5))
+			break
+		case TaskAllDone:
+			fmt.Println("All tasks completed")
+			return
+		default:
+			fmt.Println("Task information error")
+		}
+	}
 }
 
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+// 申请分配任务
+func CallScheduleTask() *TaskInfo {
+	args := TaskArgs{}
+	reply := TaskInfo{}
+	call("Coordinator.Schedule", &args, &reply)
+	return &reply
+}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Coordinator.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+// 完成工作后汇报
+func CallTaskDone(taskInfo *TaskInfo) {
+	call("Coordinator.TaskDone", taskInfo)
 }
 
 //

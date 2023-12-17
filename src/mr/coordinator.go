@@ -9,7 +9,12 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
+	mapWaiting TaskInfoArray
+	reduceWaiting TaskInfoArray
+	mapRunning TaskInfoArray
+	reduceRunning TaskInfoArray
 
+	isDone bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -19,9 +24,48 @@ type Coordinator struct {
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+func (c *Coordinator) Schedule(args *TaskArgs, reply *TaskInfo) {
+	// 是否有未分配的map任务
+	mapTask := c.mapWaiting.Pop()
+	if mapTask != nil {
+		c.mapRunning.Push(mapTask)
+		reply = &mapTask
+		fmt.Println("map task schedule")
+		return
+	}
+	// 是否有未分配的reduce任务
+	reduceTask := c.reduceWaiting.Pop()
+	if reduceTask != nil {
+		c.reduceRunning.Push(reduceTask)
+		reply = &reduceTask
+		fmt.Println("reduce task schedule")
+		return
+	}
+	// 任务已经分配完，但未执行完
+	if this.mapRunning.Size() > 0 || this.reduceRunning.Size() > 0 {
+		reply.State = TaskWait
+		return
+	}
+	// 任务全部执行完
+	reply.Start = TaskAllDone
+	c.isDone = true
+	return
+}
+
+
+func (c *Coordinator) TaskDone(args *TaskInfo) {
+	switch args.State {
+	case TaskMap:
+		fmt.Printf("Map task on %vth file %v complete\n", are.FileIndex, args.FileName)
+		c.mapRunning.RemoveTask(args.FileIndex, args.PartIndex)
+		break
+	case TaskReduce:
+		fmt.Printf("Reduce task on %vth part complete", args.PartIndex)
+		c.reduceRunning.RemoveTask(args.FileIndex, args.PartIndex)
+		break
+	default:
+		fmt.Println("Task Done error")
+	}
 }
 
 
@@ -46,12 +90,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-
-	return ret
+	return c.isDone
 }
 
 //
@@ -63,6 +102,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
+	c.isDone = false
 
 
 	c.server()
