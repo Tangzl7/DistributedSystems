@@ -8,13 +8,14 @@ package mr
 
 import "os"
 import "sync"
+import "time"
 import "strconv"
 
 const (
-	TaskMap = 0
-	TaskReduce = 1
-	TaskWait = 2
-	TaskAllDone = 3
+	TaskMap = 1
+	TaskReduce = 2
+	TaskWait = 3
+	TaskAllDone = 4
 )
 //
 // example to show how to declare the arguments
@@ -31,6 +32,9 @@ type TaskInfo struct {
 	FileName string
 	FileIndex int
 	PartIndex int
+	NFile int
+	NReduce int
+	EndTime int64
 }
 
 // 任务信息的数组
@@ -47,7 +51,7 @@ func (this *TaskInfoArray) unlock() {
 func (this *TaskInfoArray) Size() int {
 	return len(this.taskArray)
 }
-func (this *TaskInfoArray) Pop() TaskInfo {
+func (this *TaskInfoArray) Pop() *TaskInfo {
 	this.lock()
 	arrayLen := len(this.taskArray)
 	if arrayLen == 0 {
@@ -57,16 +61,45 @@ func (this *TaskInfoArray) Pop() TaskInfo {
 	ret := this.taskArray[arrayLen - 1]
 	this.taskArray = this.taskArray[:arrayLen-1]
 	this.unlock()
-	return ret
+	return &ret
 }
-func (this *TaskInfoArray) Push(taskInfo TaskInfo) {
+func (this *TaskInfoArray) Push(taskInfo *TaskInfo) {
 	this.lock()
 	if taskInfo == nil {
 		this.unlock()
 		return
 	}
-	this.taskArray = append(this.taskArray, taskInfo)
+	this.taskArray = append(this.taskArray, *taskInfo)
 	this.unlock()
+}
+func (this *TaskInfoArray) Remove(fileIndex int, partIndex int) {
+	this.lock()
+	for idx, taskInfo := range this.taskArray {
+		if taskInfo.FileIndex == fileIndex || taskInfo.PartIndex == partIndex {
+			this.taskArray = append(this.taskArray[:idx], this.taskArray[idx+1:]...)
+			this.unlock()
+			return
+		}
+	}
+	this.unlock()
+}
+
+func (this *TaskInfoArray) TimeOut() []TaskInfo {
+	now := time.Now().Unix()
+	taskArray := []TaskInfo{}
+	this.lock()
+	idx := 0
+	for idx < len(this.taskArray) {
+		taskInfo := this.taskArray[idx]
+		if (now > taskInfo.EndTime) {
+			this.taskArray = append(this.taskArray[:idx], this.taskArray[idx+1:]...)
+			taskArray = append(taskArray, taskInfo)
+		} else {
+			idx ++
+		}
+	}
+	this.unlock()
+	return taskArray
 }
 
 // Add your RPC definitions here.
