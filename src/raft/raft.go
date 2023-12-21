@@ -20,12 +20,21 @@ package raft
 import (
 //	"bytes"
 	"sync"
+	"time"
 	"sync/atomic"
 
 //	"6.824/labgob"
 	"6.824/labrpc"
 )
 
+const (
+	NoBody = -1
+	Follower = 0
+	Candidate = 1
+	Leader = 2
+	TimeOut = 250 * time.Millisecond
+	HeartBeatTime = 100 * time.Millisecond
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -61,9 +70,127 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	state int
+	term int
+	voteCnt int
+	votedFor int
 
+	heartBeatCh chan struct{}
+	grantVoteCh chan struct{}
+	leaderCh chan struct{}
+}
+
+func (rf *Raft) run() {
+	for !rf.killed() {
+		switch rf.state {
+		case Follower:
+			select {
+			case <- rf.heartBeatCh:
+			case <- rf.grantVoteCh:
+			case <- time.After(RandTimeOut()):
+				rf.state = Candidate
+			}
+			break
+		case Candidate:
+			rf.mu.Lock()
+			rf.term ++
+			rf.voteCnt = 1
+			rf.votedFor = rf.me
+			rf.mu.Unlock()
+
+			go rf.boatcastRV()
+			select {
+			case <- rf.heartBeatCh:
+				rf.state = Follower
+			case <- rf.leaderCh:
+				rf.state = Leader
+			case <- time.After(RandTimeOut()):
+			}
+			break
+		case Leader:
+			rf.boatcastHB()
+			time.Sleep(HeartBeatTime)
+			break
+		}
+	}
+}
+
+func (rf *Raft) boatcastRV() {
+	rf.mu.Lock()
+	args := RequestVoteArgs {
+		Term: rf.term,
+		CandidateId: rf.me,
+	}
+	rf.mu.Unlock()
+
+	for i, _ := range rf.peers {
+		if i != rf.me && rf.state == Candidate {
+			go func(idx int) {
+				reply := RequestVoteReply{}
+				rf.sendRequestVote(idx, &args, &reply)
+			}(i)
+		}
+	}
+}
+
+func (rf *Raft) boatcastHB() {
+	rf.mu.Lock()
+	args := HeartBeatArgs {
+		Term: rf.term,
+		LeaderId: rf.me,
+	}
+	rf.mu.Unlock()
+
+	for i, _ := range rf.peers {
+		if i != rf.me && rf.state == Leader {
+			go func(idx int) {
+				reply := HeartBeatReply{}
+				rf.sendHeartBeat(idx, &args, &reply)
+			}(i)
+		}
+	}
+}
+
+func (rf *Raft) sendHeartBeat(server int, args *HeartBeatArgs, reply *HeartBeatReply) bool {
+	ok := rf.peers[server].Call("Raft.HeartBeat", args, reply)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != Leader || args.Term != rf.term {
+		return ok
+	}
+
+	if reply.Term > rf.term {
+		rf.state = Follower
+		rf.term = reply.Term
+		rf.votedFor = NoBody
+		return ok
+	}
+
+	return ok
+}
+
+func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
+	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.term
+	reply.Sucess = false
+
+	if args.Term < rf.term {
+		return
+	}
+
+	if rf.term < args.Term {
+		rf.term = args.Term
+		rf.state = Follower
+		rf.votedFor = NoBody
+	}
+
+	reply.Sucess = true
+	rf.heartBeatCh <- struct{}{}
 }
 
 // return currentTerm and whether this server
@@ -73,6 +200,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.term
+	isleader = rf.state == Leader
 	return term, isleader
 }
 
@@ -143,6 +272,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int
+	CandidateId int
 }
 
 //
@@ -151,6 +282,18 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term int
+	VoteGranted bool
+}
+
+type HeartBeatArgs struct {
+	Term int
+	LeaderId int
+}
+
+type HeartBeatReply struct {
+	Term int
+	Sucess bool
 }
 
 //
@@ -158,6 +301,28 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.VoteGranted = false
+	reply.Term = rf.term
+
+	if rf.term > args.Term {
+		return
+	}
+
+	if args.Term > rf.term {
+		rf.term = args.Term
+		rf.state = Follower
+		rf.votedFor = NoBody
+	}
+
+	if rf.votedFor == NoBody || rf.votedFor == args.CandidateId {
+		rf.state = Follower
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+		rf.grantVoteCh <- struct{}{}
+	}
 }
 
 //
@@ -191,7 +356,43 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !ok {
+		return ok
+	}
+
+	if reply.Term > rf.term {
+		rf.term = reply.Term
+		rf.state = Follower
+		rf.voteCnt = 0
+		rf.votedFor = NoBody
+		return ok
+	}
+
+	if reply.VoteGranted {
+		rf.voteCnt ++
+		if rf.state == Candidate && rf.voteCnt > len(rf.peers) / 2 {
+			rf.state = Leader
+			rf.leaderCh <- struct{}{}
+		}
+	}
+
 	return ok
+}
+
+
+func (rf *Raft) initRaft() {
+	rf.state = Follower
+	rf.term = 0
+	rf.voteCnt = 0
+	rf.votedFor = NoBody
+
+	rf.heartBeatCh = make(chan struct{}, 100)
+	rf.grantVoteCh = make(chan struct{}, 100)
+	rf.leaderCh = make(chan struct{}, 100)
 }
 
 
@@ -244,12 +445,37 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
+		switch rf.state {
+		case Follower:
+			select {
+			case <- rf.heartBeatCh:
+			case <- rf.grantVoteCh:
+			case <- time.After(RandTimeOut()):
+				rf.state = Candidate
+			}
+			break
+		case Candidate:
+			rf.mu.Lock()
+			rf.term ++
+			rf.voteCnt = 1
+			rf.votedFor = rf.me
+			rf.mu.Unlock()
 
-		// Your code here to check if a leader election should
-		// be started and to randomize sleeping time using
-		// time.Sleep().
-
+			go rf.boatcastRV()
+			select {
+			case <- rf.heartBeatCh:
+				rf.state = Follower
+			case <- rf.leaderCh:
+				rf.state = Leader
+			case <- time.After(RandTimeOut()):
+			}
+			break
+		case Leader:
+			rf.boatcastHB()
+			time.Sleep(HeartBeatTime)
+			break
+		}
 	}
 }
 
@@ -272,6 +498,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.initRaft()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
