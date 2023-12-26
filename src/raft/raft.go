@@ -59,6 +59,12 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type Log struct {
+	Term int
+	Index int
+	Cmd interface{}
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -78,119 +84,15 @@ type Raft struct {
 	heartBeatCh chan struct{}
 	grantVoteCh chan struct{}
 	leaderCh chan struct{}
-}
 
-func (rf *Raft) run() {
-	for !rf.killed() {
-		switch rf.state {
-		case Follower:
-			select {
-			case <- rf.heartBeatCh:
-			case <- rf.grantVoteCh:
-			case <- time.After(RandTimeOut()):
-				rf.state = Candidate
-			}
-			break
-		case Candidate:
-			rf.mu.Lock()
-			rf.term ++
-			rf.voteCnt = 1
-			rf.votedFor = rf.me
-			rf.mu.Unlock()
+	commitIdx int
+	appliedIdx int
+	logs []Log
+	nextIdxs []int
+	matchIdxs []int
 
-			go rf.boatcastRV()
-			select {
-			case <- rf.heartBeatCh:
-				rf.state = Follower
-			case <- rf.leaderCh:
-				rf.state = Leader
-			case <- time.After(RandTimeOut()):
-			}
-			break
-		case Leader:
-			rf.boatcastHB()
-			time.Sleep(HeartBeatTime)
-			break
-		}
-	}
-}
-
-func (rf *Raft) boatcastRV() {
-	rf.mu.Lock()
-	args := RequestVoteArgs {
-		Term: rf.term,
-		CandidateId: rf.me,
-	}
-	rf.mu.Unlock()
-
-	for i, _ := range rf.peers {
-		if i != rf.me && rf.state == Candidate {
-			go func(idx int) {
-				reply := RequestVoteReply{}
-				rf.sendRequestVote(idx, &args, &reply)
-			}(i)
-		}
-	}
-}
-
-func (rf *Raft) boatcastHB() {
-	rf.mu.Lock()
-	args := HeartBeatArgs {
-		Term: rf.term,
-		LeaderId: rf.me,
-	}
-	rf.mu.Unlock()
-
-	for i, _ := range rf.peers {
-		if i != rf.me && rf.state == Leader {
-			go func(idx int) {
-				reply := HeartBeatReply{}
-				rf.sendHeartBeat(idx, &args, &reply)
-			}(i)
-		}
-	}
-}
-
-func (rf *Raft) sendHeartBeat(server int, args *HeartBeatArgs, reply *HeartBeatReply) bool {
-	ok := rf.peers[server].Call("Raft.HeartBeat", args, reply)
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if rf.state != Leader || args.Term != rf.term {
-		return ok
-	}
-
-	if reply.Term > rf.term {
-		rf.state = Follower
-		rf.term = reply.Term
-		rf.votedFor = NoBody
-		return ok
-	}
-
-	return ok
-}
-
-func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
-	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term = rf.term
-	reply.Sucess = false
-
-	if args.Term < rf.term {
-		return
-	}
-
-	if rf.term < args.Term {
-		rf.term = args.Term
-		rf.state = Follower
-		rf.votedFor = NoBody
-	}
-
-	reply.Sucess = true
-	rf.heartBeatCh <- struct{}{}
+	commitCh chan struct{}
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -274,6 +176,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term int
 	CandidateId int
+	LastLogTerm int
+	LastLogIdx int
 }
 
 //
@@ -289,102 +193,21 @@ type RequestVoteReply struct {
 type HeartBeatArgs struct {
 	Term int
 	LeaderId int
+	PrevLogTerm int
+	PrevLogIdx int
+	Logs []Log
+	LeaderCommit int
 }
 
 type HeartBeatReply struct {
 	Term int
 	Sucess bool
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.VoteGranted = false
-	reply.Term = rf.term
-
-	if rf.term > args.Term {
-		return
-	}
-
-	if args.Term > rf.term {
-		rf.term = args.Term
-		rf.state = Follower
-		rf.votedFor = NoBody
-	}
-
-	if rf.votedFor == NoBody || rf.votedFor == args.CandidateId {
-		rf.state = Follower
-		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
-		rf.grantVoteCh <- struct{}{}
-	}
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if !ok {
-		return ok
-	}
-
-	if reply.Term > rf.term {
-		rf.term = reply.Term
-		rf.state = Follower
-		rf.voteCnt = 0
-		rf.votedFor = NoBody
-		return ok
-	}
-
-	if reply.VoteGranted {
-		rf.voteCnt ++
-		if rf.state == Candidate && rf.voteCnt > len(rf.peers) / 2 {
-			rf.state = Leader
-			rf.leaderCh <- struct{}{}
-		}
-	}
-
-	return ok
+	XTerm int // 冲突点日志的term
+	XIdx int  // XTerm冲突日志位置
 }
 
 
-func (rf *Raft) initRaft() {
+func (rf *Raft) initRaft(applyCh) {
 	rf.state = Follower
 	rf.term = 0
 	rf.voteCnt = 0
@@ -393,6 +216,12 @@ func (rf *Raft) initRaft() {
 	rf.heartBeatCh = make(chan struct{}, 100)
 	rf.grantVoteCh = make(chan struct{}, 100)
 	rf.leaderCh = make(chan struct{}, 100)
+	
+	rf.commitIdx = 0
+	rf.appliedIdx = 0
+	rf.commitCh = make(chan struct{}, 100)
+	rf.applyCh = applyCh
+	rf.logs = append(rf.logs, Log{Term:0, Index:0})
 }
 
 
@@ -416,7 +245,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
+	isLeader = rf.state == Leader
+	if isLeader {
+		index = rf.LastLogIdx() + 1
+		term = rf.term
+		log := Log {
+			Term: term,
+			Index: index,
+			Cmd: command,
+		}
+		rf.logs = append(rf.logs, log)
+	}
 
 	return index, term, isLeader
 }
@@ -468,6 +307,12 @@ func (rf *Raft) ticker() {
 				rf.state = Follower
 			case <- rf.leaderCh:
 				rf.state = Leader
+				rf.nextIdxs = make([]int, len(rf.peers))
+				rf.matchIdxs = make([]int, len(rf.peers))
+				for i:= range rf.peers {
+					rf.nextIdxs[i] = rf.LastLogIdx() + 1
+					rf.matchIdxs[i] = 0
+				}
 			case <- time.After(RandTimeOut()):
 			}
 			break
@@ -475,6 +320,27 @@ func (rf *Raft) ticker() {
 			rf.boatcastHB()
 			time.Sleep(HeartBeatTime)
 			break
+		}
+	}
+}
+
+func (rf *Raft) commit() {
+	for !rf.killed() {
+		select {
+		case <- rf.commitCh:
+			rf.mu.Lock()
+			for i:=rf.appliedIdx; i<=rf.commitIdx; i++ {
+				msg := ApplyMsg {
+					CommandIndex: i,
+					CommandValid: true,
+					Command: rf.logs[i].Cmd
+				}
+				rf.mu.Unlock()
+				rf.applyCh <- msg
+				rf.mu.Lock()
+				rf.appliedIdx = i
+			}
+			rf.mu.Unlock()
 		}
 	}
 }
@@ -498,7 +364,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.initRaft()
+	rf.initRaft(applyCh)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
