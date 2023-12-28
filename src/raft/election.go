@@ -1,12 +1,11 @@
 package raft
 
-
 func (rf *Raft) boatcastRV() {
 	rf.mu.Lock()
 	args := RequestVoteArgs {
 		Term: rf.term,
 		CandidateId: rf.me,
-		LastLogTerm: rf.logs[rf.LastLogIdx()].Term,,
+		LastLogTerm: rf.logs[len(rf.logs) - 1].Term,
 		LastLogIdx: rf.LastLogIdx(),
 	}
 	rf.mu.Unlock()
@@ -23,20 +22,27 @@ func (rf *Raft) boatcastRV() {
 
 func (rf *Raft) boatcastHB() {
 	rf.mu.Lock()
-	args := HeartBeatArgs {
-		Term: rf.term,
-		LeaderId: rf.me,
-		LeaderCommit: rf.committed,
-	}
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 
 	for i, _ := range rf.peers {
 		if i != rf.me && rf.state == Leader {
 			go func(idx int) {
-				args.PrevLogIdx = rf.nextIdxs[idx]-1
+				args := HeartBeatArgs {
+					Term: rf.term,
+					LeaderId: rf.me,
+					LeaderCommit: rf.commitIdx,
+				}
+
+				if rf.nextIdxs[idx] < 1 {
+					args.PrevLogIdx = 0
+				} else if rf.nextIdxs[idx]-1 <= rf.LastLogIdx() { // 这种情况是可能存在的
+					args.PrevLogIdx = rf.nextIdxs[idx]-1
+				} else {
+					args.PrevLogIdx = rf.LastLogIdx()
+				}
 				args.PrevLogTerm = rf.logs[args.PrevLogIdx].Term
-				if args.PrevLogIdx+1<=rf.LastLogIdx() {
-					args.Logs = append(args.Logs, rf.logs[args.PrevLogIdx+1:]...)
+				if rf.nextIdxs[idx] <= rf.LastLogIdx() {
+					args.Logs = append(args.Logs, rf.logs[rf.nextIdxs[idx]:]...)
 				}
 				reply := HeartBeatReply{}
 				rf.sendHeartBeat(idx, &args, &reply)
@@ -63,19 +69,21 @@ func (rf *Raft) sendHeartBeat(server int, args *HeartBeatArgs, reply *HeartBeatR
 	}
 
 	if reply.Sucess {
-		rf.nextIdxs[server] += len(args.Logs)
+		rf.nextIdxs[server] = args.PrevLogIdx + len(args.Logs) + 1
 		rf.matchIdxs[server] = rf.nextIdxs[server] - 1
 
-		commit = rf.commitIdx
+		commit := rf.commitIdx
+		// 之前想直接找到第一个不匹配的位置，它之前的就全是匹配的了，但这样存在错误，应为cnt++的条件包含了
+		// term的判断，即不匹配的位置可能是term不同，这样的不匹配时可以接受的
 		for i:=commit+1; i<len(rf.logs); i++ {
 			cnt := 1
 			for j, _ := range rf.peers {
-				if j != rf.me  && rf.matchIdxs[j]>=i {
+				if j != rf.me  && rf.matchIdxs[j]>=i && rf.logs[i].Term == rf.term {
 					cnt ++
 				}
 			}
-			if cnt <= len(rf.peers) / 2 {
-				commit = i - 1
+			if cnt > len(rf.peers) / 2 {
+				commit = i
 				break
 			}
 		}
@@ -132,7 +140,7 @@ func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
 	// 越界，要覆盖的位置大于已有日志长度
 	if args.PrevLogIdx > rf.LastLogIdx() {
 		reply.XTerm = -2
-		reply.XIdx = rf.LastLogIdx()
+		reply.XIdx = len(rf.logs) - 1
 		return
 	}
 	// term不同
@@ -150,7 +158,9 @@ func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
 
 	// 没有异常
 	reply.Sucess = true
-	rf.logs = append(rf.logs[:args.PrevLogIdx], args.Logs)
+	if args.Logs != nil { // 必须加这个，防止加入空
+		rf.logs = append(rf.logs[:args.PrevLogIdx+1], args.Logs...)
+	}
 	if rf.commitIdx < args.LeaderCommit {
 		rf.commitIdx = args.LeaderCommit
 		if rf.commitIdx > rf.LastLogIdx() {

@@ -20,6 +20,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-func (rf *Raft) LastLogIdx() {
+func (rf *Raft) LastLogIdx() int {
 	return rf.logs[len(rf.logs) - 1].Index
 }

@@ -207,7 +207,7 @@ type HeartBeatReply struct {
 }
 
 
-func (rf *Raft) initRaft(applyCh) {
+func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 	rf.state = Follower
 	rf.term = 0
 	rf.voteCnt = 0
@@ -245,6 +245,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.term
 	isLeader = rf.state == Leader
 	if isLeader {
 		index = rf.LastLogIdx() + 1
@@ -306,6 +309,7 @@ func (rf *Raft) ticker() {
 			case <- rf.heartBeatCh:
 				rf.state = Follower
 			case <- rf.leaderCh:
+				rf.mu.Lock() // 忘记加lock了
 				rf.state = Leader
 				rf.nextIdxs = make([]int, len(rf.peers))
 				rf.matchIdxs = make([]int, len(rf.peers))
@@ -313,6 +317,7 @@ func (rf *Raft) ticker() {
 					rf.nextIdxs[i] = rf.LastLogIdx() + 1
 					rf.matchIdxs[i] = 0
 				}
+				rf.mu.Unlock()
 			case <- time.After(RandTimeOut()):
 			}
 			break
@@ -321,6 +326,7 @@ func (rf *Raft) ticker() {
 			time.Sleep(HeartBeatTime)
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -333,7 +339,7 @@ func (rf *Raft) commit() {
 				msg := ApplyMsg {
 					CommandIndex: i,
 					CommandValid: true,
-					Command: rf.logs[i].Cmd
+					Command: rf.logs[i].Cmd,
 				}
 				rf.mu.Unlock()
 				rf.applyCh <- msg
@@ -371,6 +377,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+
+	go rf.commit()
 
 
 	return rf
