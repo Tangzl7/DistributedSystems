@@ -65,6 +65,7 @@ func (rf *Raft) sendHeartBeat(server int, args *HeartBeatArgs, reply *HeartBeatR
 		rf.state = Follower
 		rf.term = reply.Term
 		rf.votedFor = NoBody
+		rf.persist()
 		return ok
 	}
 
@@ -96,7 +97,7 @@ func (rf *Raft) sendHeartBeat(server int, args *HeartBeatArgs, reply *HeartBeatR
 			rf.nextIdxs[server] = reply.XIdx + 1
 		} else  {
 			rf.nextIdxs[server] = reply.XIdx
-			for i:=args.PrevLogIdx; i>=1; i-- {
+			for i:=args.PrevLogIdx; i>=0; i-- {
 				if rf.logs[i].Term == reply.XTerm {
 					rf.nextIdxs[server] = i + 1
 					break
@@ -115,6 +116,7 @@ func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	reply.Term = rf.term
 	reply.Sucess = false
@@ -130,6 +132,7 @@ func (rf *Raft) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) {
 	}
 
 	rf.heartBeatCh <- struct{}{}
+	rf.votedFor = args.LeaderId
 
 	// 要覆盖该Follower已经提交了的日志
 	if args.PrevLogIdx + 1 <= rf.commitIdx {
@@ -210,11 +213,15 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		return ok
 	}
 
+	if rf.state != Candidate || args.Term != rf.term {
+		return ok
+	}
+
 	if reply.Term > rf.term {
 		rf.term = reply.Term
 		rf.state = Follower
-		rf.voteCnt = 0
 		rf.votedFor = NoBody
+		rf.persist()
 		return ok
 	}
 
@@ -236,6 +243,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	reply.VoteGranted = false
 	reply.Term = rf.term

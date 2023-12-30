@@ -18,12 +18,12 @@ package raft
 //
 
 import (
-//	"bytes"
+	"bytes"
 	"sync"
 	"time"
 	"sync/atomic"
 
-//	"6.824/labgob"
+	"6.824/labgob"
 	"6.824/labrpc"
 )
 
@@ -114,13 +114,15 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	e.Encode(rf.term)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 
@@ -132,18 +134,19 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var term, voterFor int
+	var logs []Log
+	if d.Decode(&term) != nil || d.Decode(&voterFor) != nil || d.Decode(&logs) != nil {
+		DPrintf("read persist fail\n")
+	} else {
+		rf.term = term
+		rf.votedFor = voterFor
+		rf.logs = logs
+	}
 }
 
 
@@ -222,6 +225,13 @@ func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 	rf.commitCh = make(chan struct{}, 100)
 	rf.applyCh = applyCh
 	rf.logs = append(rf.logs, Log{Term:0, Index:0})
+
+	rf.nextIdxs = make([]int, len(rf.peers))
+	rf.matchIdxs = make([]int, len(rf.peers))
+	for i := range rf.peers {
+		rf.nextIdxs[i] = rf.LastLogIdx() + 1
+		rf.matchIdxs[i] = 0
+	}
 }
 
 
@@ -247,6 +257,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
+
 	term = rf.term
 	isLeader = rf.state == Leader
 	if isLeader {
@@ -302,6 +314,7 @@ func (rf *Raft) ticker() {
 			rf.term ++
 			rf.voteCnt = 1
 			rf.votedFor = rf.me
+			rf.persist()
 			rf.mu.Unlock()
 
 			go rf.boatcastRV()
@@ -335,7 +348,7 @@ func (rf *Raft) commit() {
 		select {
 		case <- rf.commitCh:
 			rf.mu.Lock()
-			for i:=rf.appliedIdx; i<=rf.commitIdx; i++ {
+			for i:=rf.appliedIdx+1; i<=rf.commitIdx; i++ {
 				msg := ApplyMsg {
 					CommandIndex: i,
 					CommandValid: true,
