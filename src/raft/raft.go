@@ -93,6 +93,9 @@ type Raft struct {
 
 	commitCh chan struct{}
 	applyCh chan ApplyMsg
+
+	lastIncludeIndex int
+	lastIncludeTerm int
 }
 
 // return currentTerm and whether this server
@@ -154,7 +157,7 @@ func (rf *Raft) readPersist(data []byte) {
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludeIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
 
@@ -169,46 +172,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
 }
-
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term int
-	CandidateId int
-	LastLogTerm int
-	LastLogIdx int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term int
-	VoteGranted bool
-}
-
-type HeartBeatArgs struct {
-	Term int
-	LeaderId int
-	PrevLogTerm int
-	PrevLogIdx int
-	Logs []Log
-	LeaderCommit int
-}
-
-type HeartBeatReply struct {
-	Term int
-	Sucess bool
-	XTerm int // 冲突点日志的term
-	XIdx int  // XTerm冲突日志位置
-}
-
 
 func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 	rf.state = Follower
@@ -225,6 +188,9 @@ func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 	rf.commitCh = make(chan struct{}, 100)
 	rf.applyCh = applyCh
 	rf.logs = append(rf.logs, Log{Term:0, Index:0})
+
+	rf.lastIncludeIndex = 0
+	rf.lastIncludeTerm = 0
 
 	rf.nextIdxs = make([]int, len(rf.peers))
 	rf.matchIdxs = make([]int, len(rf.peers))
@@ -350,9 +316,9 @@ func (rf *Raft) commit() {
 			rf.mu.Lock()
 			for i:=rf.appliedIdx+1; i<=rf.commitIdx; i++ {
 				msg := ApplyMsg {
-					CommandIndex: i,
+					CommandIndex: rf.logs[i - rf.lastIncludeIndex].Index,
 					CommandValid: true,
-					Command: rf.logs[i].Cmd,
+					Command: rf.logs[i - rf.lastIncludeIndex].Cmd,
 				}
 				rf.mu.Unlock()
 				rf.applyCh <- msg
@@ -392,7 +358,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.ticker()
 
 	go rf.commit()
-
 
 	return rf
 }

@@ -23,3 +23,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 func (rf *Raft) LastLogIdx() int {
 	return rf.logs[len(rf.logs) - 1].Index
 }
+
+func (rf *Raft) LastLogTerm() int {
+	return rf.logs[len(rf.logs) - 1].Term
+}
