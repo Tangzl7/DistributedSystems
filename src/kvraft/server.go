@@ -19,10 +19,16 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 
+// 对应于raft中的cmd
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	ClientId int
+	CmdId int
+	Key string
+	Value string
+	King string
 }
 
 type KVServer struct {
@@ -35,6 +41,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	kvDB map[string]string
+	appliedIdx map[int64]int
+	results
 }
 
 
