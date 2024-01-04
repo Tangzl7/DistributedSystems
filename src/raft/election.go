@@ -1,5 +1,7 @@
 package raft
 
+// import "log"
+
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term int
@@ -90,10 +92,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	log_flag := false
-	if args.LastLogTerm > rf.logs[rf.LastLogIdx() - rf.lastIncludeIndex].Term {
+	if args.LastLogTerm > rf.logs[rf.LastLogIdx() - rf.lastIncludedIndex].Term {
 		log_flag = true
 	}
-	if args.LastLogTerm == rf.logs[rf.LastLogIdx() - rf.lastIncludeIndex].Term && args.LastLogIdx >= rf.LastLogIdx() {
+	if args.LastLogTerm == rf.logs[rf.LastLogIdx() - rf.lastIncludedIndex].Term && args.LastLogIdx >= rf.LastLogIdx() {
 		log_flag = true
 	}
 

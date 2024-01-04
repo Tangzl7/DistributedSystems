@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 	"sync/atomic"
+	// "log"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -33,7 +34,7 @@ const (
 	Candidate = 1
 	Leader = 2
 	TimeOut = 250 * time.Millisecond
-	HeartBeatTime = 100 * time.Millisecond
+	HeartBeatTime = 50 * time.Millisecond
 )
 
 //
@@ -94,8 +95,8 @@ type Raft struct {
 	commitCh chan struct{}
 	applyCh chan ApplyMsg
 
-	lastIncludeIndex int
-	lastIncludeTerm int
+	lastIncludedIndex int
+	lastIncludedTerm int
 }
 
 // return currentTerm and whether this server
@@ -115,16 +116,21 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
-func (rf *Raft) persist() {
-	// Your code here (2C).
-
+func (rf *Raft) getPersistData() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
 	e.Encode(rf.term)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
+	return data
+}
+
+func (rf *Raft) persist() {
+	data := rf.getPersistData()
 	rf.persister.SaveRaftState(data)
 }
 
@@ -137,18 +143,25 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (2C).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
 
 	var term, voterFor int
 	var logs []Log
-	if d.Decode(&term) != nil || d.Decode(&voterFor) != nil || d.Decode(&logs) != nil {
+	var lastIncludedIndex, lastIncludedTerm int
+	if d.Decode(&term) != nil || d.Decode(&voterFor) != nil || d.Decode(&logs) != nil ||
+		 d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
 		DPrintf("read persist fail\n")
 	} else {
 		rf.term = term
 		rf.votedFor = voterFor
 		rf.logs = logs
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
+		rf.appliedIdx = lastIncludedIndex
 	}
 }
 
@@ -157,20 +170,11 @@ func (rf *Raft) readPersist(data []byte) {
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
 //
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludeIndex int, snapshot []byte) bool {
+func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
 
 	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
 }
 
 func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
@@ -189,8 +193,8 @@ func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 	rf.applyCh = applyCh
 	rf.logs = append(rf.logs, Log{Term:0, Index:0})
 
-	rf.lastIncludeIndex = 0
-	rf.lastIncludeTerm = 0
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = 0
 
 	rf.nextIdxs = make([]int, len(rf.peers))
 	rf.matchIdxs = make([]int, len(rf.peers))
@@ -305,7 +309,7 @@ func (rf *Raft) ticker() {
 			time.Sleep(HeartBeatTime)
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		// time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -316,9 +320,9 @@ func (rf *Raft) commit() {
 			rf.mu.Lock()
 			for i:=rf.appliedIdx+1; i<=rf.commitIdx; i++ {
 				msg := ApplyMsg {
-					CommandIndex: rf.logs[i - rf.lastIncludeIndex].Index,
+					CommandIndex: rf.logs[i - rf.lastIncludedIndex].Index,
 					CommandValid: true,
-					Command: rf.logs[i - rf.lastIncludeIndex].Cmd,
+					Command: rf.logs[i - rf.lastIncludedIndex].Cmd,
 				}
 				rf.mu.Unlock()
 				rf.applyCh <- msg
