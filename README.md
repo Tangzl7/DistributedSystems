@@ -1,2 +1,6 @@
-# MapReduce
-6.824 Lab: MapReduce
+# DistributedSystems
+Lab1: MapReduce  
+
+Lab2：Raft  
+
+Lab3：KVRaft  
