@@ -41,7 +41,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	if !ok {
 		return ok
@@ -55,6 +54,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 		rf.term = reply.Term
 		rf.state = Follower
 		rf.votedFor = NoBody
+		rf.persist()
 		return ok
 	}
 
