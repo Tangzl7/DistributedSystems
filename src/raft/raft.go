@@ -34,7 +34,7 @@ const (
 	Candidate = 1
 	Leader = 2
 	TimeOut = 250 * time.Millisecond
-	HeartBeatTime = 50 * time.Millisecond
+	HeartBeatTime = 25 * time.Millisecond
 )
 
 //
@@ -111,6 +111,14 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+func (rf *Raft) GetPersisterSize() int {
+	return rf.persister.RaftStateSize()
+}
+
+func (rf *Raft) GetPersister() *Persister {
+	return rf.persister
+}
+
 //
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
@@ -162,6 +170,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.lastIncludedIndex = lastIncludedIndex
 		rf.lastIncludedTerm = lastIncludedTerm
 		rf.appliedIdx = lastIncludedIndex
+		rf.commitIdx = lastIncludedIndex
 	}
 }
 
@@ -178,6 +187,10 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 }
 
 func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
+	// 这里也必须加锁，因为自己可能重启，但之前开启的协程还在运行
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	rf.state = Follower
 	rf.term = 0
 	rf.voteCnt = 0
@@ -220,17 +233,15 @@ func (rf *Raft) initRaft(applyCh chan ApplyMsg) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
-	term = rf.term
-	isLeader = rf.state == Leader
+	
+	index := -1
+	term := rf.term
+	isLeader := rf.state == Leader
 	if isLeader {
 		index = rf.LastLogIdx() + 1
 		term = rf.term

@@ -1,3 +1,4 @@
-for i in {1..1}; 
-    do go test -run 3A; 
+for i in {1..20}; 
+    do go test -run 3; 
+    # go test -run TestSnapshotUnreliableRecoverConcurrentPartitionLinearizable3B; 
 done

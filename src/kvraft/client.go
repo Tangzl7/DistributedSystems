@@ -54,17 +54,22 @@ func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 
 	for {
+		DPrintf("[%v->%v]: key: %v, cmdId: %v in Clerk's Get", ck.clientId, ck.leaderId, key, ck.cmdId-1)
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 
 		if !ok {
+			DPrintf("%v's %v: req server not ok, timeout in Clerk's Get", ck.clientId, ck.cmdId-1)
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		}
 		if reply.Err == OK {
+			DPrintf("get k: %v, v: %v in Clerk's GET", key, reply.Value)
 			return reply.Value
 		} else if reply.Err == ErrNoKey {
+			DPrintf("get err no key: %v in Clerk's GET", key)
 			return ""
 		} else {
+			DPrintf("get wrong leader in Clerk's GET")
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
 	}
@@ -93,15 +98,19 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 
 	for {
+		DPrintf("[%v->%v]: key: %v, value: %v, Op: %v, cmdId: %v in Clerk's PutAppend", ck.clientId, ck.leaderId, key, value, op, ck.cmdId-1)
 		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
 
 		if !ok {
+			DPrintf("%v's %v: req server not ok, timeout in Clerk's PutAppend", ck.clientId, ck.cmdId-1)
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		}
 		if reply.Err == OK {
+			DPrintf("put append key: %v, value: %v ok, leader: %v in Clerk's PutAppend", key, value, ck.leaderId)
 			return
 		} else {
+			DPrintf("put append wrong leader: %v in Clerk's PutAppend", ck.leaderId)
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 		}
 	}

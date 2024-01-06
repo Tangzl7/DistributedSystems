@@ -6,6 +6,8 @@ import (
 	"6.824/raft"
 	"log"
 	"sync"
+	"time"
+	"bytes"
 	"sync/atomic"
 )
 
@@ -24,11 +26,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	ClientId int
+	ClientId int64
 	CmdId int
 	Key string
 	Value string
-	King string
+	Type string
 }
 
 type KVServer struct {
@@ -43,16 +45,75 @@ type KVServer struct {
 	// Your definitions here.
 	kvDB map[string]string
 	appliedIdx map[int64]int
-	results
+	results map[int]chan Op
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	cmd := Op {
+		ClientId: args.ClientId,
+		CmdId: args.CmdId,
+		Key: args.Key,
+		Type: "Get",
+	}
+
+	ok := kv.appendEntry(cmd)
+	if !ok {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	kv.mu.Lock()
+	val, exist := kv.kvDB[args.Key]
+	kv.mu.Unlock()
+
+	if !exist {
+		reply.Err = ErrNoKey
+	} else {
+		reply.Err = OK
+		reply.Value = val
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	cmd := Op {
+		ClientId: args.ClientId,
+		CmdId: args.CmdId,
+		Key: args.Key,
+		Value: args.Value,
+		Type: args.Op,
+	}
+
+	ok := kv.appendEntry(cmd)
+	if !ok {
+		reply.Err = ErrWrongLeader
+	} else {
+		reply.Err = OK
+	}
+}
+
+func (kv *KVServer) appendEntry(cmd Op) bool {
+	index, _, isLeader := kv.rf.Start(cmd)
+	if !isLeader {
+		return false
+	}
+
+	kv.mu.Lock()
+	ch, ok := kv.results[index]
+	if !ok {
+		ch = make(chan Op, 1)
+		kv.results[index] = ch
+	}
+	kv.mu.Unlock()
+
+	select {
+	case op := <- kv.results[index]:
+		return op == cmd
+	case <- time.After(time.Millisecond * TimeOut):
+		return false
+	}
 }
 
 //
@@ -74,6 +135,76 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
+}
+
+func (kv *KVServer) serve() {
+	for !kv.killed() {
+		applyMsg := <-kv.applyCh
+		if applyMsg.CommandValid {
+			index := applyMsg.CommandIndex
+			cmd := applyMsg.Command.(Op)
+	
+			kv.mu.Lock()
+			lastCmdId, exist := kv.appliedIdx[cmd.ClientId]
+			if !exist || cmd.CmdId > lastCmdId {
+				kv.appliedIdx[cmd.ClientId] = cmd.CmdId
+	
+				if cmd.Type == "Put" {
+					kv.kvDB[cmd.Key] = cmd.Value
+				} else if cmd.Type == "Append" {
+					kv.kvDB[cmd.Key] += cmd.Value
+				}
+			}
+
+			if kv.maxraftstate != -1 && kv.rf.GetPersisterSize() > kv.maxraftstate {
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.kvDB)
+				e.Encode(kv.appliedIdx)
+				data := w.Bytes()
+				kv.rf.Snapshot(index, data)
+			}
+	
+			ch, exist := kv.results[index]
+			if exist {
+				select {
+				case <- kv.results[index]:
+				default:
+				}
+				ch <- cmd
+			}
+			kv.mu.Unlock()
+		} else {
+			r := bytes.NewBuffer(applyMsg.Snapshot)
+			d := labgob.NewDecoder(r)
+
+			kv.mu.Lock()
+			kv.kvDB = make(map[string]string)
+			kv.appliedIdx = make(map[int64]int)
+			d.Decode(&kv.kvDB)
+			d.Decode(&kv.appliedIdx)
+			kv.mu.Unlock()
+		}
+	}
+}
+
+func (kv *KVServer) readSnapshot(data []byte) {
+	if data == nil || len(data) == 0 {
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var db map[string]string
+	var appliedIdx map[int64]int
+
+	if d.Decode(&db) != nil || d.Decode(&appliedIdx) != nil {
+		DPrintf("readSnapshot err\n")
+	} else {
+		kv.kvDB = db
+		kv.appliedIdx = appliedIdx
+	}
 }
 
 //
@@ -105,6 +236,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.kvDB = make(map[string]string)
+	kv.appliedIdx = make(map[int64]int)
+	kv.results = make(map[int]chan Op)
+
+	kv.readSnapshot(kv.rf.GetPersister().ReadSnapshot())
+
+	go kv.serve()
 
 	return kv
 }

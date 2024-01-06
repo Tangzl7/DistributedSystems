@@ -19,12 +19,13 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) boatcastHB() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	for i, _ := range rf.peers {
 		if i != rf.me && rf.state == Leader {
 			go func(idx int) {
+				// 加锁要放到协程里面，否则不起作用
+				rf.mu.Lock()
+
 				if rf.nextIdxs[idx] <= rf.lastIncludedIndex {
 					args := InstallSnapshotArgs {
 						Term: rf.term,
@@ -34,6 +35,7 @@ func (rf *Raft) boatcastHB() {
 						Data: rf.persister.ReadSnapshot(),
 					}
 					reply := InstallSnapshotReply{}
+					rf.mu.Unlock()
 					rf.sendInstallSnapshot(idx, &args, &reply)
 				} else {
 					args := AppendEntriesArgs {
@@ -54,6 +56,7 @@ func (rf *Raft) boatcastHB() {
 						args.Logs = append(args.Logs, rf.logs[rf.nextIdxs[idx]-rf.lastIncludedIndex:]...)
 					}
 					reply := AppendEntriesReply{}
+					rf.mu.Unlock()
 					rf.sendAppendEntries(idx, &args, &reply)
 				}
 			}(i)
@@ -143,6 +146,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.heartBeatCh <- struct{}{}
 	rf.votedFor = args.LeaderId
+	// snapshot之前的日志已经提交，不能覆盖
+	if rf.lastIncludedIndex > args.PrevLogIdx {
+		reply.XTerm = -1
+		reply.XIdx = rf.lastIncludedIndex
+		return
+	}
 
 	// 要覆盖该Follower已经提交了的日志
 	if args.PrevLogIdx + 1 <= rf.commitIdx {

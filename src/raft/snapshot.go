@@ -13,7 +13,6 @@ type InstallSnapshotArgs struct {
 
 type InstallSnapshotReply struct {
 	Term int
-	Sucess bool
 }
 
 // the service says it has created a snapshot that has
@@ -40,7 +39,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.term
-	reply.Sucess = false
 	if args.Term < rf.term {
 		return
 	}
@@ -56,19 +54,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// follwer的快照更新
 	if rf.lastIncludedTerm > args.LastIncludedTerm || (rf.lastIncludedTerm == args.LastIncludedTerm &&
-		  rf.lastIncludedIndex > args.LastIncludedIndex) {
-		rf.persist()
-		return
-	}
-	// 快照相同，但nextIdxs可能落后，需要更新
-	if (rf.lastIncludedTerm == args.LastIncludedTerm && rf.lastIncludedIndex == args.LastIncludedIndex) {
-		reply.Sucess = true
+		  rf.lastIncludedIndex >= args.LastIncludedIndex) {
 		rf.persist()
 		return
 	}
 
 	// leader的快照更新
-	reply.Sucess = true
 	snaps := args.LastIncludedIndex - rf.lastIncludedIndex
 	if snaps >= len(rf.logs) {
 		rf.logs = make([]Log, 1)
@@ -80,15 +71,17 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastIncludedTerm = args.LastIncludedTerm
 	rf.lastIncludedIndex = args.LastIncludedIndex
-	if rf.appliedIdx < rf.lastIncludedIndex {
-		rf.appliedIdx = rf.lastIncludedIndex
-	}
-	if rf.commitIdx < rf.lastIncludedIndex {
-		rf.commitIdx = rf.lastIncludedIndex
-	}
+	// 不能加这两个if，重置了快照，appliedidx和commitidx必须重置
+	// if rf.appliedIdx < rf.lastIncludedIndex {
+	rf.appliedIdx = rf.lastIncludedIndex
+	// }
+	// if rf.commitIdx < rf.lastIncludedIndex {
+	rf.commitIdx = rf.lastIncludedIndex
+	// }
 	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), args.Data)
 
 	snapApplyMsg := ApplyMsg {
+		CommandValid: false,
 		SnapshotValid: true,
 		SnapshotIndex: args.LastIncludedIndex,
 		SnapshotTerm: args.LastIncludedTerm,
@@ -99,10 +92,28 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
-	if reply.Sucess {
-		rf.nextIdxs[server] = args.LastIncludedIndex + 1
-		rf.matchIdxs[server] = rf.nextIdxs[server] - 1
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+
+    if !ok {
+        return ok
+    }
+
+	if rf.state != Leader || args.Term != rf.term {
+		return ok
 	}
+
+	if reply.Term > rf.term {
+		rf.state = Follower
+		rf.term = reply.Term
+		rf.votedFor = NoBody
+		rf.persist()
+		return ok
+	}
+
+	// 这里不管安装快照是否成功都必须更新，？
+	rf.nextIdxs[server] = args.LastIncludedIndex + 1
+	rf.matchIdxs[server] = rf.nextIdxs[server] - 1
 	return ok
 }
 
