@@ -16,9 +16,11 @@ package shardctrler
 //
 // You will need to add fields to the RPC argument structs.
 //
+import "6.824/labgob"
 
 // The number of shards.
 const NShards = 10
+const TimeOut = 1000
 
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
@@ -34,7 +36,13 @@ const (
 
 type Err string
 
+type Args struct {
+	ClientId int64
+	CmdId int
+}
+
 type JoinArgs struct {
+	Args
 	Servers map[int][]string // new GID -> servers mappings
 }
 
@@ -44,6 +52,7 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
+	Args
 	GIDs []int
 }
 
@@ -53,6 +62,7 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
+	Args
 	Shard int
 	GID   int
 }
@@ -63,6 +73,7 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
+	Args
 	Num int // desired config number
 }
 
@@ -70,4 +81,30 @@ type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+func init() {
+	labgob.Register(Config{})
+	labgob.Register(QueryArgs{})
+	labgob.Register(QueryReply{})
+	labgob.Register(JoinArgs{})
+	labgob.Register(JoinReply{})
+	labgob.Register(LeaveArgs{})
+	labgob.Register(MoveArgs{})
+	labgob.Register(LeaveReply{})
+	labgob.Register(MoveReply{})
+}
+
+func (cfg *Config) DeepCopy() Config {
+	config := Config {
+		Num: cfg.Num,
+		Shards: cfg.Shards,
+		Groups: make(map[int][]string),
+	}
+
+	for gid, servers := range cfg.Groups {
+		config.Groups[gid] = append([]string{}, servers...)
+	}
+
+	return config
 }

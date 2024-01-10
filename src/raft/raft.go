@@ -22,7 +22,6 @@ import (
 	"sync"
 	"time"
 	"sync/atomic"
-	// "log"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -97,6 +96,10 @@ type Raft struct {
 
 	lastIncludedIndex int
 	lastIncludedTerm int
+}
+
+func (rf *Raft) GetMe() int {
+	return rf.me
 }
 
 // return currentTerm and whether this server
