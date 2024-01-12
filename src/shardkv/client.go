@@ -40,6 +40,8 @@ type Clerk struct {
 	config   shardctrler.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	clientId int64
+	cmdId int
 }
 
 //
@@ -56,6 +58,8 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardctrler.MakeClerk(ctrlers)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.cmdId = 0
 	return ck
 }
 
@@ -68,8 +72,12 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
+	args.ClientId = ck.clientId
+	args.CmdId = ck.cmdId
+	ck.cmdId ++
 
 	for {
+		DPrintf("[%v]: key: %v, cmdId: %v in Clerk's Get", ck.clientId, key, ck.cmdId-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -79,11 +87,14 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+					DPrintf("get k: %v, v: %v in Clerk's GET", key, reply.Value)
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					DPrintf("get wrong group in Clerk's GET")
 					break
 				}
+				DPrintf("%v's %v: req server not ok, timeout in Clerk's Get", ck.clientId, ck.cmdId-1)
 				// ... not ok, or ErrWrongLeader
 			}
 		}
@@ -104,9 +115,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
-
+	args.ClientId = ck.clientId
+	args.CmdId = ck.cmdId
+	ck.cmdId ++
 
 	for {
+		DPrintf("[%v]: key: %v, value: %v, Op: %v, cmdId: %v in Clerk's PutAppend", ck.clientId, key, value, op, ck.cmdId-1)
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
@@ -115,11 +129,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
+					DPrintf("put append key: %v, value: %v ok, leader: in Clerk's PutAppend", key, value)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					DPrintf("put append wrong group")
 					break
 				}
+				DPrintf("put append %s", reply.Err)
 				// ... not ok, or ErrWrongLeader
 			}
 		}
