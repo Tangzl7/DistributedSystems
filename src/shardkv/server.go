@@ -7,10 +7,11 @@ import "sync"
 import "6.824/labgob"
 import "6.824/shardctrler"
 import "log"
+import "time"
 import "bytes"
 import "sync/atomic"
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -35,6 +36,7 @@ type Op struct {
 	Value string
 	Type string
 
+	ConfigIdx int
 	UpConfig shardctrler.Config
 	ShardId int
 	Shard Shard
@@ -87,6 +89,25 @@ func (kv *ShardKV) killed() bool {
 	return z == 1
 }
 
+func (kv *ShardKV) ifDuplicate(clientId int64, seqId int) bool {
+
+	lastSeqId, exist := kv.appliedIdx[clientId]
+	if !exist {
+		return false
+	}
+	return seqId <= lastSeqId
+}
+
+func (kv *ShardKV) getWaitCh(index int) chan OpReply {
+
+	ch, exist := kv.results[index]
+	if !exist {
+		kv.results[index] = make(chan OpReply, 1)
+		ch = kv.results[index]
+	}
+	return ch
+}
+
 func (kv *ShardKV) serve() {
 	for !kv.killed() {
 		applyMsg := <-kv.applyCh
@@ -101,15 +122,14 @@ func (kv *ShardKV) serve() {
 	
 			kv.mu.Lock()
 			lastCmdId, exist := kv.appliedIdx[cmd.ClientId]
+			DPrintf("me %v, type %v, cmdid %v applied %v\n", kv.me, cmd.Type, cmd.CmdId, lastCmdId)
 			if cmd.Type == "Put" || cmd.Type == "Append" || cmd.Type == "Get" {
 				shard := key2shard(cmd.Key)
 				if kv.config.Shards[shard] != kv.gid {
 					reply.Err = ErrWrongGroup
 				} else if kv.shardsKvDB[shard].KvDB == nil {
 					reply.Err = ErrShardNotArrived
-				}
-
-				if !exist || cmd.CmdId > lastCmdId {
+				} else if !exist || cmd.CmdId > lastCmdId {
 					kv.appliedIdx[cmd.ClientId] = cmd.CmdId
 		
 					if cmd.Type == "Put" {
@@ -118,6 +138,19 @@ func (kv *ShardKV) serve() {
 						kv.shardsKvDB[shard].KvDB[cmd.Key] += cmd.Value
 					}
 				}
+			} else {
+				switch cmd.Type {
+				case "AddShard":
+					if kv.config.Num < cmd.CmdId {
+						reply.Err = ErrConfigNotArrived
+						break
+					}
+					kv.addShardHandler(cmd)
+				case "RemoveShard":
+					kv.removeShardHandler(cmd)
+				case "UpConfig":
+					kv.upConfigHandler(cmd)
+				}
 			}
 
 			if kv.maxraftstate != -1 && kv.rf.GetPersisterSize() > kv.maxraftstate {
@@ -125,18 +158,18 @@ func (kv *ShardKV) serve() {
 				e := labgob.NewEncoder(w)
 				e.Encode(kv.shardsKvDB)
 				e.Encode(kv.appliedIdx)
+				e.Encode(kv.lastConfig)
+				e.Encode(kv.config)
 				data := w.Bytes()
 				kv.rf.Snapshot(index, data)
 			}
 	
-			ch, exist := kv.results[index]
-			if exist {
-				select {
-				case <- kv.results[index]:
-				default:
-				}
-				ch <- reply
+			ch, ok := kv.results[index]
+			if !ok {
+				ch = make(chan OpReply, 1)
+				kv.results[index] = ch
 			}
+			ch <- reply
 			kv.mu.Unlock()
 		} else {
 			r := bytes.NewBuffer(applyMsg.Snapshot)
@@ -145,11 +178,100 @@ func (kv *ShardKV) serve() {
 			kv.mu.Lock()
 			kv.shardsKvDB = make([]Shard, shardctrler.NShards)
 			kv.appliedIdx = make(map[int64]int)
+			var config, lastConfig shardctrler.Config
 			d.Decode(&kv.shardsKvDB)
 			d.Decode(&kv.appliedIdx)
+			d.Decode(&lastConfig)
+			d.Decode(&config)
+			kv.config = config
+			kv.lastConfig = lastConfig
 			kv.mu.Unlock()
 		}
 	}
+}
+
+func (kv *ShardKV) updataConfig() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		if _, isLeader := kv.rf.GetState(); !isLeader {
+			kv.mu.Unlock()
+			time.Sleep(UpConfigInterval)
+			continue
+		}
+		kv.mu.Unlock()
+
+		kv.mu.Lock()
+		// 把自己的分给别人
+		if !kv.allSent() {
+			appliedIdx := make(map[int64]int)
+			for k, v := range kv.appliedIdx {
+				appliedIdx[k] = v
+			}
+			for shard, gid := range kv.lastConfig.Shards {
+				if gid == kv.gid && kv.config.Shards[shard] != kv.gid && kv.shardsKvDB[shard].ConfigIdx < kv.config.Num {
+					shardData := kv.cloneShard(kv.config.Num, kv.shardsKvDB[shard].KvDB)
+					args := ShardArgs {
+						AppliedIdx: appliedIdx,
+						ShardId: shard,
+						Shard: shardData,
+						ClientId: int64(gid),
+						CmdId: kv.config.Num,
+					}
+
+					serversList := kv.config.Groups[kv.config.Shards[shard]]
+					servers := make([]*labrpc.ClientEnd, len(serversList))
+					for i, name := range serversList {
+						servers[i] = kv.make_end(name)
+					}
+					go kv.sendAddShard(servers, &args)
+				}
+			}
+			kv.mu.Unlock()
+			time.Sleep(UpConfigInterval)
+			continue
+		}
+		if !kv.allReceived() {
+			kv.mu.Unlock()
+			time.Sleep(UpConfigInterval)
+			continue
+		}
+		config := kv.config
+		sck := kv.sck
+		kv.mu.Unlock()
+
+		upConfig := sck.Query(config.Num + 1)
+		if upConfig.Num != config.Num + 1 {
+			time.Sleep(UpConfigInterval)
+			continue
+		}
+
+		cmd := Op {
+			Type: "UpConfig",
+			ClientId: int64(kv.gid),
+			CmdId: upConfig.Num,
+			UpConfig: upConfig,
+		}
+		kv.appendEntry(cmd)
+		// kv.rf.Start(cmd)
+	}
+}
+
+func (kv *ShardKV) allSent() bool {
+	for shard, gid := range kv.lastConfig.Shards {
+		if gid == kv.gid && kv.config.Shards[shard] != kv.gid && kv.shardsKvDB[shard].ConfigIdx < kv.config.Num {
+			return false
+		}
+	}
+	return true
+}
+
+func (kv *ShardKV) allReceived() bool {
+	for shard, gid := range kv.lastConfig.Shards {
+		if gid != kv.gid && kv.config.Shards[shard] == kv.gid && kv.shardsKvDB[shard].ConfigIdx < kv.config.Num {
+			return false
+		}
+	}
+	return true
 }
 
 func (kv *ShardKV) readSnapshot(data []byte) {
@@ -162,12 +284,16 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 
 	var db []Shard
 	var appliedIdx map[int64]int
+	var lastConfig shardctrler.Config
+	var config shardctrler.Config
 
-	if d.Decode(&db) != nil || d.Decode(&appliedIdx) != nil {
+	if d.Decode(&db) != nil || d.Decode(&appliedIdx) != nil || d.Decode(&lastConfig) != nil || d.Decode(&config) != nil {
 		DPrintf("readSnapshot err\n")
 	} else {
 		kv.shardsKvDB = db
 		kv.appliedIdx = appliedIdx
+		kv.lastConfig = lastConfig
+		kv.config = config
 	}
 }
 
@@ -228,6 +354,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.readSnapshot(kv.rf.GetPersister().ReadSnapshot())
 
 	go kv.serve()
+	go kv.updataConfig()
 
 	return kv
 }

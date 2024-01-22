@@ -8,6 +8,7 @@ package shardkv
 //
 // You will have to modify these definitions.
 //
+import "time"
 
 const (
 	OK             = "OK"
@@ -15,10 +16,11 @@ const (
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
 	ErrShardNotArrived = "ErrShardNotArrived"
+	ErrConfigNotArrived = "ErrConfigNotArrived"
 	ErrInconsistentData = "ErrInconsistentData"
 	ErrTimeOut = "ErrTimeOut"
-	TimeOut = 1000
-	UpConfigInterval = 200
+	TimeOut = 500 * time.Millisecond
+	UpConfigInterval = 100 * time.Millisecond
 )
 
 type Err string
@@ -51,3 +53,17 @@ type GetReply struct {
 	Err   Err
 	Value string
 }
+
+
+type ShardArgs struct {
+	AppliedIdx map[int64]int
+	ShardId int
+	Shard Shard
+	ClientId int64
+	CmdId int
+}
+
+type ShardReply struct {
+	Err Err
+}
+
