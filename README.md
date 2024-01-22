@@ -69,6 +69,7 @@ PASS
 ok  	6.824/raft	492.332s  
 
 Lab3: KVRaft  
+
 Test: one client (3A) ...  
   ... Passed --  15.1  5  7039  589  
 Test: ops complete fast enough (3A) ...  
@@ -122,7 +123,8 @@ Test: unreliable net, restarts, partitions, snapshots, random keys, many clients
 PASS  
 ok  	6.824/kvraft	448.701s  
 
-Lab4: Shardctrler+Shardkv
+Lab4: Shardctrler+Shardkv  
+
 Test: Basic leave/join ...  
   ... Passed  
 Test: Historical queries ...  
