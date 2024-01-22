@@ -11,7 +11,7 @@ import "time"
 import "bytes"
 import "sync/atomic"
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -87,25 +87,6 @@ func (kv *ShardKV) Kill() {
 func (kv *ShardKV) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
-}
-
-func (kv *ShardKV) ifDuplicate(clientId int64, seqId int) bool {
-
-	lastSeqId, exist := kv.appliedIdx[clientId]
-	if !exist {
-		return false
-	}
-	return seqId <= lastSeqId
-}
-
-func (kv *ShardKV) getWaitCh(index int) chan OpReply {
-
-	ch, exist := kv.results[index]
-	if !exist {
-		kv.results[index] = make(chan OpReply, 1)
-		ch = kv.results[index]
-	}
-	return ch
 }
 
 func (kv *ShardKV) serve() {

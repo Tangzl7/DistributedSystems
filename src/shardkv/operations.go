@@ -124,7 +124,7 @@ func (kv *ShardKV) sendAddShard(servers []*labrpc.ClientEnd, args *ShardArgs) {
 		reply := ShardReply{}
 		ok := servers[index].Call("ShardKV.AddShard", args, &reply)
 
-		if ok && reply.Err == OK || time.Now().Sub(start) >= 2*time.Second {
+		if ok && reply.Err == OK || time.Now().Sub(start) >= 10*time.Second {
 			kv.mu.Lock()
 			cmd := Op {
 				Type: "RemoveShard",
